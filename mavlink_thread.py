@@ -52,8 +52,7 @@ class MAVLinkFlagThread:
                     continue
 
             # ── watch for heartbeat loss ──────────────────────────────────
-            # msg = self._master.recv_match(blocking=True, timeout=3)
-            # print(msg)
+            msg = self._master.recv_match(blocking=True, timeout=3)
             if msg is None:
                 print("[MAVLINK THREAD] Heartbeat lost")
                 self._flags.mavlink_connected = False

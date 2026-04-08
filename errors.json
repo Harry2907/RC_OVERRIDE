@@ -1,0 +1,43 @@
+{
+  "battery": {
+    "type": "PREARM",
+    "short": "Battery low",
+    "severity": "HIGH"
+  },
+
+  "gyro": {
+  "type": "PREARM",
+  "short": "Gyro issue",
+  "severity": "HIGH"
+},
+
+  "gps": {
+    "type": "PREARM",
+    "short": "No GPS fix",
+    "severity": "HIGH"
+  },
+
+  "baro": {
+    "type": "PREARM",
+    "short": "Barometer failure",
+    "severity": "HIGH"
+  },
+
+  "ekf variance": {
+    "type": "EKF",
+    "short": "Unstable position",
+    "severity": "HIGH"
+  },
+
+  "imu1": {
+    "type": "EKF",
+    "short": "IMU1 issue",
+    "severity": "MEDIUM"
+  },
+  
+  "imu0": {
+    "type": "EKF",
+    "short": "IMU0 issue",
+    "severity": "MEDIUM"
+  }
+}

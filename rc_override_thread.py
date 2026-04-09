@@ -74,9 +74,9 @@ class RCOverrideThread:
         def safe_axis(idx):
             return self._js.get_axis(idx) if idx < num_axes else 0.0
 
-        roll     = axis_to_pwm(safe_axis(AXIS_ROLL))
-        pitch    = axis_to_pwm(safe_axis(AXIS_PITCH),    invert=True)  # pygame Y is inverted
-        throttle = axis_to_pwm(safe_axis(AXIS_THROTTLE), invert=True)  # stick up = more throttle
+        roll     = axis_to_pwm(safe_axis(AXIS_ROLL),     invert=False)  # corrected
+        pitch    = axis_to_pwm(safe_axis(AXIS_PITCH),    invert=False) # inverted back per user
+        throttle = axis_to_pwm(safe_axis(AXIS_THROTTLE), invert=False)  # inverted back per user
         yaw      = axis_to_pwm(safe_axis(AXIS_YAW))
 
         # CH1=Roll, CH2=Pitch, CH3=Throttle, CH4=Yaw, CH5-CH8=passthrough

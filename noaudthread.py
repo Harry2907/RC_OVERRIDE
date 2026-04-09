@@ -332,6 +332,8 @@ class DroneGCS:
                     if not self._flags.mavlink_connected:
                         print("[STATE] Master disconnected → RECONNECTING")
                         self._flags.disconnected_device = "master"
+                        self._engine.say("Trainer disconnected")
+                        self._engine.runAndWait()
                         STATE = "RECONNECTING"
                         break
 
@@ -339,6 +341,8 @@ class DroneGCS:
                     if not self._flags.slave_connected:
                         print("[STATE] Slave disconnected → RECONNECTING")
                         self._flags.disconnected_device = "slave"
+                        self._engine.say("Trainee disconnected")
+                        self._engine.runAndWait()
                         STATE = "RECONNECTING"
                         break
             # ── RECONNECTING ──────────────────────────────────────────────
@@ -355,6 +359,9 @@ class DroneGCS:
                 self._display.force_redraw()
                 self._dirty.set()
 
+                label = "Trainer" if device == "master" else "Trainee"
+                self._engine.say(f"{label} reconnected")
+                self._engine.runAndWait()
                 print(f"[STATE] {device} reconnected → ACTIVE")
                 STATE = "ACTIVE"
 

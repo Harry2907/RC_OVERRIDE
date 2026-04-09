@@ -108,7 +108,7 @@ def reconnect_screen(disp, img, draw, WIDTH, HEIGHT, flags, device_name):
     SPINNER_R  = 16
     ARC_SPAN   = 270
 
-    device_label = "MASTER RC" if device_name == "master" else "SLAVE TX12"
+    device_label = "TRAINER" if device_name == "master" else "TRAINEE"
 
     # -- fonts ------------------------------------------------------------
     BASE        = "/usr/share/fonts/truetype/dejavu/"
@@ -125,14 +125,14 @@ def reconnect_screen(disp, img, draw, WIDTH, HEIGHT, flags, device_name):
     ew = draw.textlength("!", font=font_exclam)
     draw.text((CX - ew // 2, ICON_Y - 8), "!", font=font_exclam, fill=ORANGE)
 
-    # "DISCONNECTED"
-    lw = draw.textlength("DISCONNECTED", font=font_bold)
-    draw.text((CX - lw // 2, LABEL_Y), "DISCONNECTED",
+    # "TRAINER / TRAINEE"
+    lw = draw.textlength(device_label, font=font_bold)
+    draw.text((CX - lw // 2, LABEL_Y), device_label,
               font=font_bold, fill=RED_BGR)
 
-    # device name
-    dw = draw.textlength(device_label, font=font_bold)
-    draw.text((CX - dw // 2, DEVICE_Y), device_label,
+    # "DISCONNECTED"
+    dw = draw.textlength("DISCONNECTED", font=font_bold)
+    draw.text((CX - dw // 2, DEVICE_Y), "DISCONNECTED",
               font=font_bold, fill=WHITE)
 
     # "RECONNECTING..."

@@ -5,7 +5,7 @@ from pymavlink import mavutil
 
 class MAVLinkFlagThread:
 
-    PORTS    = ["/dev/ttyACM0", "/dev/ttyACM1"]
+    PORTS    = ["/dev/ttyACM0", "/dev/ttyACM1", "/dev/ttyACM2", "/dev/ttyACM3", "/dev/ttyACM4"]
     BAUD     = 57600
     TIMEOUT  = 5
     RETRY    = 2
@@ -26,8 +26,7 @@ class MAVLinkFlagThread:
 
                 print(f"✓ MAVLink Connected ({port})")
 
-                # ✅ CRITICAL: share connection
-                self._flags.mavlink_master = m
+                self._flags.mavlink_master    = m
                 self._flags.mavlink_connected = True
 
                 self._master = m
@@ -42,13 +41,15 @@ class MAVLinkFlagThread:
         while self._flags.running:
 
             if not self._flags.mavlink_connected:
+                # Clear stale master reference before attempting reconnect
+                # so MAVLinkReader doesn't try to reuse a dead connection.
+                self._flags.mavlink_master = None
+
                 if self._connect():
                     print("[MAVLINK THREAD] Connected")
                 else:
                     time.sleep(self.RETRY)
                     continue
 
-            # ✅ DO NOTHING ELSE
-            # MAVLinkReader will handle all reading
-
+            # DO NOTHING ELSE — MAVLinkReader owns all reading.
             time.sleep(1)

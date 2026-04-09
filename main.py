@@ -1,5 +1,6 @@
 import time
 import threading
+import queue
 import json
 import pyttsx3
 from serial import SerialException
@@ -14,6 +15,14 @@ from rc_override_thread import RCOverrideThread
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 class MAVLinkReader:
+
+    # How long to wait after (re)connect before firing stream requests.
+    # Gives the FC time to finish USB re-enumeration before we ask for data.
+    STREAM_SETTLE   = 0.5   # seconds
+
+    # If GPS fix hasn't arrived this many seconds after streams were requested,
+    # re-send the stream request (FC may have silently dropped it).
+    STREAM_RETRY_S  = 6.0   # seconds
 
     def __init__(self, connection_string, state, lock, dirty, flags):
         self._flags             = flags
@@ -40,6 +49,11 @@ class MAVLinkReader:
         self._disarm_counter    = 0
         self._last_status       = None
 
+        # FIX 2: track when we last sent stream requests so we can retry
+        # if GPS data doesn't arrive (FC silently ignored the first request).
+        self._stream_requested_at = 0.0
+        self._stream_retry_due    = 0.0
+
     def _classify_error(self, msg):
         msg_lower = msg.lower()
         for key, val in self._rules.items():
@@ -64,6 +78,9 @@ class MAVLinkReader:
                 4,    # 4 Hz
                 1     # start streaming
             )
+        now = time.time()
+        self._stream_requested_at = now
+        self._stream_retry_due    = now + self.STREAM_RETRY_S
         print("[MAVLINK] Stream rates requested")
 
     def connect(self):
@@ -71,6 +88,15 @@ class MAVLinkReader:
 
         if self._flags.mavlink_master is not None:
             self._master = self._flags.mavlink_master
+
+            # FIX 1: MAVLinkFlagThread already consumed the first heartbeat via
+            # wait_heartbeat(). If we don't mark these True here, MAVLinkReader
+            # will sit in "INITIALIZING..." state until it personally sees the
+            # NEXT heartbeat (~1 s away), causing the "boot complete but no data"
+            # symptom.
+            self._got_heartbeat = True
+            self._boot_complete = True
+
             print("Reusing existing MAVLink connection!")
         else:
             print("Opening NEW connection (fallback)")
@@ -80,6 +106,12 @@ class MAVLinkReader:
             self._flags.mavlink_connected = True
             print("Connected!")
 
+        # FIX 2: Small settle delay before requesting streams.
+        # After a USB reconnect the FC finishes re-enumeration and sends its
+        # first heartbeat almost immediately, but its internal GPS/sensor
+        # subsystems may not be ready yet. Firing stream requests too early
+        # causes the FC to silently ignore them, leaving GPS stuck at no-fix.
+        time.sleep(self.STREAM_SETTLE)
         self._request_streams()
 
     def start(self):
@@ -97,6 +129,15 @@ class MAVLinkReader:
                 self._flags.disconnected_device = "master"
                 self._dirty.set()
                 return   # kill this thread — DroneGCS will spawn a fresh one
+
+            # FIX 2 (cont.): If GPS fix still hasn't arrived after STREAM_RETRY_S
+            # seconds, re-send stream requests. The FC likely dropped the first
+            # batch (common right after USB reconnect). Keep retrying every
+            # STREAM_RETRY_S until we get a fix.
+            if not self._state.get("gps_fix", False):
+                if time.time() >= self._stream_retry_due > 0:
+                    print("[MAVLINK] No GPS fix yet — retrying stream request")
+                    self._request_streams()
 
             if msg is None:
                 continue
@@ -243,13 +284,33 @@ class DroneGCS:
 
         self._display = DroneDisplay()
 
-        self._engine = pyttsx3.init()
-        self._engine.setProperty('rate', 140)
-        self._engine.setProperty('volume', 0.1)
+        # TTS runs in its own dedicated thread — pyttsx3 is NOT thread-safe.
+        # All other threads just call self._speak("text") and return instantly.
+        # The TTS thread drains the queue one message at a time.
+        self._tts_queue  = queue.Queue()
+        self._tts_thread = threading.Thread(target=self._tts_loop, daemon=True)
+        self._tts_thread.start()
 
         self._render_thread = None   # tracked so we don't double-start
 
     # ── helpers ───────────────────────────────────────────────────────────
+    def _speak(self, text):
+        """Non-blocking. Any thread can call this safely."""
+        self._tts_queue.put(text)
+
+    def _tts_loop(self):
+        """Single thread that owns pyttsx3 — drains queue one item at a time."""
+        engine = pyttsx3.init()
+        engine.setProperty('rate', 140)
+        engine.setProperty('volume', 0.1)
+        while True:
+            text = self._tts_queue.get()   # blocks until something is queued
+            try:
+                engine.say(text)
+                engine.runAndWait()
+            except Exception as e:
+                print(f"[TTS] Error: {e}")
+
     def _reset_state(self):
         """Clear telemetry back to defaults before a reconnect cycle."""
         with self._lock:
@@ -274,6 +335,13 @@ class DroneGCS:
         )
         mavlink.connect()
         mavlink.start()
+
+        # FIX 1 (cont.): Force an immediate render after the reader is running.
+        # Without this the dirty event fired inside connect() (when we set
+        # _boot_complete = True) can be missed if the render thread hasn't
+        # started yet, leaving the display stale until the next message arrives.
+        self._dirty.set()
+
         return mavlink
 
     def _start_render_loop(self):
@@ -332,8 +400,7 @@ class DroneGCS:
                     if not self._flags.mavlink_connected:
                         print("[STATE] Master disconnected → RECONNECTING")
                         self._flags.disconnected_device = "master"
-                        self._engine.say("Trainer disconnected")
-                        self._engine.runAndWait()
+                        self._speak("Trainer disconnected")
                         STATE = "RECONNECTING"
                         break
 
@@ -341,10 +408,10 @@ class DroneGCS:
                     if not self._flags.slave_connected:
                         print("[STATE] Slave disconnected → RECONNECTING")
                         self._flags.disconnected_device = "slave"
-                        self._engine.say("Trainee disconnected")
-                        self._engine.runAndWait()
+                        self._speak("Trainee disconnected")
                         STATE = "RECONNECTING"
                         break
+
             # ── RECONNECTING ──────────────────────────────────────────────
             elif STATE == "RECONNECTING":
                 device = self._flags.disconnected_device   # "master" | "slave"
@@ -360,8 +427,7 @@ class DroneGCS:
                 self._dirty.set()
 
                 label = "Trainer" if device == "master" else "Trainee"
-                self._engine.say(f"{label} reconnected")
-                self._engine.runAndWait()
+                self._speak(f"{label} reconnected")
                 print(f"[STATE] {device} reconnected → ACTIVE")
                 STATE = "ACTIVE"
 
@@ -393,15 +459,13 @@ class DroneGCS:
             self._display.render()
 
             if s["mode"] != last_mode_spoken and s["mode"] != "N/A":
-                self._engine.say(f"Switched to {s['mode']} MODE")
-                self._engine.runAndWait()
+                self._speak(f"Switched to {s['mode']} MODE")
                 last_mode_spoken = s["mode"]
 
             rc10 = self._flags.rc10_active
             if rc10 != last_rc10_spoken:
                 speech = "Control to slave" if rc10 else "Control to master"
-                self._engine.say(speech)
-                self._engine.runAndWait()
+                self._speak(speech)
                 last_rc10_spoken = rc10
 
 

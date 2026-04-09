@@ -90,38 +90,7 @@ python main.py
 
 ---
 
-## Known Bugs Fixed
 
-### Bug 1 — Default values flash after boot
-
-**What happened:** Right after the boot screen finished, the display briefly showed all blank defaults (`mode: N/A`, `altitude: 0.0`, `INITIALIZING...`) before real telemetry arrived.
-
-**Why:** The ACTIVE state called `_dirty.set()` immediately after `_reset_state()`, waking the render loop before `MAVLinkReader` had received a single real message from the FC.
-
-**Fix:** Removed the premature `_dirty.set()` from the ACTIVE block. The render loop now only wakes when `MAVLinkReader` sets dirty after receiving real data.
-
----
-
-### Bug 2 — No telemetry on first boot, data only after RC reset
-
-**What happened:** After boot, stream requests were sent and retried forever (`No GPS fix yet — retrying`). Nothing arrived — no mode, no altitude, no status. Data only appeared after physically resetting/reconnecting the master RC.
-
-**Root cause — two parts:**
-
-1. **`target_system = 0`** — `MAVLinkFlagThread` called `wait_heartbeat()` which sets the FC's address on the connection object. But pymavlink has an internal background thread that continuously reads the serial port and grabbed the next heartbeat before `MAVLinkReader` could see it. So `target_system` stayed `0`. Stream requests sent to `system=0` are silently ignored by the FC.
-
-2. **Stream request sent too early** — Even with the correct address, the FC was still internally booting when the stream request arrived and silently dropped it. Resetting the RC forced a fresh connection cycle by which time the FC was fully ready.
-
-**Fix:**
-- If `target_system` is `0` after reusing the connection, force it to `1,1` (ArduPilot is always system 1, component 1 — this is a MAVLink standard).
-- Stop sending stream requests in `connect()` entirely. Instead, send them inside the thread loop on the **first HEARTBEAT message actually received**. At that point the FC has proven it is alive, fully booted, and ready to respond.
-
-```
-Before: connect() → wait 1.5s → send stream request → FC ignores it
-After:  connect() → thread starts → FC sends heartbeat → thread receives it → send stream request → FC honours it
-```
-
----
 
 ## Axis Mapping (TX12 USB)
 

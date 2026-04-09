@@ -4,16 +4,11 @@ from pymavlink import mavutil
 
 
 class MAVLinkFlagThread:
-    """
-    Lightweight MAVLink heartbeat watcher.
-    Only job: set flags.mavlink_connected True/False.
-    Does NOT own telemetry — that stays in MAVLinkReader (noaudthread).
-    """
 
     PORTS    = ["/dev/ttyACM0", "/dev/ttyACM1"]
     BAUD     = 57600
-    TIMEOUT  = 5       # heartbeat wait seconds
-    RETRY    = 2       # seconds between retries
+    TIMEOUT  = 5
+    RETRY    = 2
 
     def __init__(self, flags):
         self._flags  = flags
@@ -28,32 +23,32 @@ class MAVLinkFlagThread:
             try:
                 m = mavutil.mavlink_connection(port, baud=self.BAUD)
                 m.wait_heartbeat(timeout=self.TIMEOUT)
-                            
+
                 print(f"✓ MAVLink Connected ({port})")
-                msg = m.recv_match(timeout=3)
-                
-                print(msg)
+
+                # ✅ CRITICAL: share connection
+                self._flags.mavlink_master = m
+                self._flags.mavlink_connected = True
+
                 self._master = m
                 return True
+
             except Exception:
-                pass
+                continue
+
         return False
 
     def _loop(self):
         while self._flags.running:
 
-            # ── try to connect ────────────────────────────────────────────
             if not self._flags.mavlink_connected:
                 if self._connect():
                     print("[MAVLINK THREAD] Connected")
-                    self._flags.mavlink_connected = True
                 else:
                     time.sleep(self.RETRY)
                     continue
 
-            # ── watch for heartbeat loss ──────────────────────────────────
-            msg = self._master.recv_match(blocking=True, timeout=3)
-            if msg is None:
-                print("[MAVLINK THREAD] Heartbeat lost")
-                self._flags.mavlink_connected = False
-                self._master = None
+            # ✅ DO NOTHING ELSE
+            # MAVLinkReader will handle all reading
+
+            time.sleep(1)

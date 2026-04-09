@@ -5,7 +5,7 @@ class SharedFlags:
     def __init__(self):
         self._lock  = threading.Lock()
         self._event = threading.Event()
-
+        self.mavlink_master = None
         self._mavlink_connected = False
         self._slave_connected   = False
         self.running            = True

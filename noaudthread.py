@@ -13,7 +13,8 @@ from joystick_thread import JoystickFlagThread
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 class MAVLinkReader:
 
-    def __init__(self, connection_string, state, lock, dirty):
+    def __init__(self, connection_string, state, lock, dirty, flags):
+        self._flags = flags
         self._connection_string = connection_string
         self._state = state
         self._lock = lock
@@ -53,12 +54,19 @@ class MAVLinkReader:
 
     def connect(self):
         print("Connecting to MAVLink…")
+
+        if self._flags.mavlink_master is not None:
+            self._master = self._flags.mavlink_master
+            print("Reusing existing MAVLink connection!")
+            return
+
+        print("Opening NEW connection (fallback)")
         self._master = mavutil.mavlink_connection(self._connection_string)
 
         print("Waiting for heartbeat…")
         self._master.wait_heartbeat()
         print("Connected!")
-
+        
     def start(self):
         self._thread.start()
 
@@ -191,15 +199,37 @@ class DroneGCS:
     CONNECTION = "udp:0.0.0.0:14550"
 
     def __init__(self):
+
         self._state = {
-            "mode": "N/A",
-            "gps_fix": False,
-            "altitude": 0.0,
-            "rssi": -1,
-            "in_flight": False,
-            "status_msg": "INITIALIZING...",
-            "armed": False,
-        }
+    "mode": "N/A",
+    "gps_fix": False,
+    "altitude": 0.0,
+    "rssi": -1,
+    "in_flight": False,
+    "status_msg": "INITIALIZING...",
+    "armed": False,
+}
+        self._lock  = threading.Lock()
+        self._dirty = threading.Event()
+
+        # ✅ CREATE FLAGS FIRST
+        self._flags = SharedFlags()
+
+        # ✅ START THREADS
+        MAVLinkFlagThread(self._flags).start()
+        JoystickFlagThread(self._flags).start()
+
+        # ✅ NOW create MAVLinkReader (it needs flags)
+        self._mavlink = MAVLinkReader(
+            self.CONNECTION,
+            self._state,
+            self._lock,
+            self._dirty,
+            self._flags
+        )
+
+        # display + audio after
+        self._display = DroneDisplay()
         self._lock  = threading.Lock()
         self._dirty = threading.Event()
 
@@ -208,6 +238,7 @@ class DroneGCS:
             self._state,
             self._lock,
             self._dirty,
+            self._flags
         )
 
         self._display = DroneDisplay()
@@ -251,10 +282,29 @@ class DroneGCS:
 
             # ── ACTIVE_READY ─────────────────────────────────────────────
             elif STATE == "ACTIVE_READY":
-                # placeholder — ACTIVE handoff implemented later
-                print("[STATE] System ready. ACTIVE state not yet implemented.")
-                break
+                print("[STATE] Entering ACTIVE mode")
+                STATE = "ACTIVE"
+                
+            elif STATE == "ACTIVE":
+                print("[STATE] ACTIVE")
 
+                # --- START CORE SYSTEM ---
+                self._mavlink.connect()
+                self._mavlink.start()
+
+                render_thread = threading.Thread(
+                    target=self._render_loop, daemon=True
+                )
+                render_thread.start()
+
+                # --- SUPERVISION LOOP ---
+                while True:
+                    self._flags.wait(timeout=0.5)
+
+                    # optional debug
+                    # print("[ACTIVE] running...")
+
+                    # future: add reconnect logic here
     def start(self):
         self._state_manager()
 

@@ -311,10 +311,16 @@ class DroneGCS:
             elif STATE == "ACTIVE":
                 print("[STATE] ACTIVE")
 
-                self._flags.disconnected_device = None   # clear any stale flag
-                self._reset_state()
+                came_from = self._flags.disconnected_device  # "master"|"slave"|None
+                self._flags.disconnected_device = None
 
-                mavlink = self._start_mavlink()
+                # Only (re)start MAVLink on first boot or after a master disconnect.
+                # After a slave reconnect the MAVLink thread is still alive —
+                # spawning a second one causes double reads on the serial port.
+                if came_from != "slave":
+                    self._reset_state()
+                    mavlink = self._start_mavlink()
+
                 self._dirty.set()
                 self._start_render_loop()
 
@@ -335,7 +341,6 @@ class DroneGCS:
                         self._flags.disconnected_device = "slave"
                         STATE = "RECONNECTING"
                         break
-
             # ── RECONNECTING ──────────────────────────────────────────────
             elif STATE == "RECONNECTING":
                 device = self._flags.disconnected_device   # "master" | "slave"
@@ -343,6 +348,12 @@ class DroneGCS:
 
                 # blocks here, spinning on screen, until device is back
                 reconnect_screen(disp, img, draw, W, H, self._flags, device)
+
+                # reconnect_screen drew all over the shared image buffer.
+                # Clear DroneDisplay's state cache so render() forces a full
+                # redraw on the very next cycle instead of skipping (white screen).
+                self._display.force_redraw()
+                self._dirty.set()
 
                 print(f"[STATE] {device} reconnected → ACTIVE")
                 STATE = "ACTIVE"

@@ -94,7 +94,7 @@ def reconnect_screen(disp, img, draw, WIDTH, HEIGHT, flags, device_name):
     # -- colour scheme (BGR display) ---------------------------------------
     BG        = (0,   0,   0)
     RED_BGR   = (0,   0,   255)
-    ORANGE    = (65, 100,  255)
+    ORANGE    = (255, 100, 65)
     WHITE     = (255, 255, 255)
     DIM       = (80,  80,  80)
 
@@ -138,7 +138,7 @@ def reconnect_screen(disp, img, draw, WIDTH, HEIGHT, flags, device_name):
     # "RECONNECTING..."
     rw = draw.textlength("RECONNECTING...", font=font_small)
     draw.text((CX - rw // 2, STATUS_Y), "RECONNECTING...",
-              font=font_small, fill=DIM)
+              font=font_small, fill= WHITE)
 
     # spinner track (dim ring)
     sx0 = CX - SPINNER_R

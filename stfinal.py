@@ -145,6 +145,10 @@ class DroneDisplay:
         d.line((x, bot, x + size, bot), fill=color, width=2)
 
     # ── Main render ────────────────────────────────────────────────────────
+    def force_redraw(self):
+        """Invalidate the state cache so the next render() always redraws."""
+        self._prev.clear()
+
     def render(self):
         if not self._state_changed():
             return

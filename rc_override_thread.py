@@ -24,6 +24,11 @@ PWM_MAX  = 2000
 # Channels we do NOT override — FC keeps its own value
 PASSTHROUGH = 65535
 
+# Safe neutral channels (used as fallback on error — never send 0,
+# which would release the channel back to master RC mid-flight)
+NEUTRAL_CHANNELS = [PWM_MID, PWM_MID, PWM_MID, PWM_MID,
+                    PASSTHROUGH, PASSTHROUGH, PASSTHROUGH, PASSTHROUGH]
+
 
 def axis_to_pwm(value, invert=False):
     """
@@ -45,27 +50,39 @@ class RCOverrideThread:
     When flags.rc10_active is False:
         - Stops sending overrides immediately
         - FC reverts to master RC input automatically
+
+    FIX 1: _get_joystick() no longer calls pygame.joystick.quit/init.
+            JoystickFlagThread owns the subsystem. Calling quit() here was
+            the race condition that caused "Joystick not initialized" errors.
+
+    FIX 2: On any read exception we resend _last_channels (last known good
+            stick position) instead of dropping to neutral. This prevents
+            the channel snap-back when a transient error occurs.
     """
 
     def __init__(self, flags):
-        self._flags  = flags
-        self._thread = threading.Thread(target=self._loop, daemon=True)
-        self._js     = None
+        self._flags        = flags
+        self._thread       = threading.Thread(target=self._loop, daemon=True)
+        self._js           = None
+        # Cache last successfully read channels — used as fallback on error
+        self._last_channels = list(NEUTRAL_CHANNELS)
 
     def start(self):
         self._thread.start()
 
-    # ── get joystick handle (already initialised by JoystickFlagThread) ──────
+    # ── get joystick handle ───────────────────────────────────────────────
+    # FIX: Do NOT call pygame.joystick.quit/init here.
+    # JoystickFlagThread owns the pygame joystick subsystem.
+    # Reinitialising it here while JoystickFlagThread may also be touching
+    # it caused the race condition. Just grab the existing Joystick(0).
     def _get_joystick(self):
-        pygame.joystick.quit()
-        pygame.joystick.init()
         if pygame.joystick.get_count() == 0:
             return None
         js = pygame.joystick.Joystick(0)
         js.init()
         return js
 
-    # ── read axes and build 8-channel PWM list ────────────────────────────────
+    # ── read axes and build 8-channel PWM list ────────────────────────────
     def _read_channels(self):
         pygame.event.pump()
 
@@ -74,16 +91,16 @@ class RCOverrideThread:
         def safe_axis(idx):
             return self._js.get_axis(idx) if idx < num_axes else 0.0
 
-        roll     = axis_to_pwm(safe_axis(AXIS_ROLL),     invert=False)  # corrected
-        pitch    = axis_to_pwm(safe_axis(AXIS_PITCH),    invert=False) # inverted back per user
-        throttle = axis_to_pwm(safe_axis(AXIS_THROTTLE), invert=False)  # inverted back per user
+        roll     = axis_to_pwm(safe_axis(AXIS_ROLL),     invert=False)
+        pitch    = axis_to_pwm(safe_axis(AXIS_PITCH),    invert=False)
+        throttle = axis_to_pwm(safe_axis(AXIS_THROTTLE), invert=False)
         yaw      = axis_to_pwm(safe_axis(AXIS_YAW))
 
         # CH1=Roll, CH2=Pitch, CH3=Throttle, CH4=Yaw, CH5-CH8=passthrough
         return [roll, pitch, throttle, yaw,
                 PASSTHROUGH, PASSTHROUGH, PASSTHROUGH, PASSTHROUGH]
 
-    # ── send override packet ──────────────────────────────────────────────────
+    # ── send override packet ──────────────────────────────────────────────
     def _send_override(self, channels):
         master = self._flags.mavlink_master
         if master is None:
@@ -94,7 +111,7 @@ class RCOverrideThread:
             *channels        # CH1 … CH8
         )
 
-    # ── clear override — lets FC fall back to master RC ───────────────────────
+    # ── clear override — lets FC fall back to master RC ───────────────────
     def _clear_override(self):
         master = self._flags.mavlink_master
         if master is None:
@@ -107,7 +124,7 @@ class RCOverrideThread:
         )
         print("[RC OVERRIDE] Released — master RC restored")
 
-    # ── main loop ─────────────────────────────────────────────────────────────
+    # ── main loop ─────────────────────────────────────────────────────────
     def _loop(self):
         was_active = False
 
@@ -119,6 +136,7 @@ class RCOverrideThread:
             if was_active and not active:
                 self._clear_override()
                 self._js = None
+                self._last_channels = list(NEUTRAL_CHANNELS)  # reset cache
                 was_active = False
                 continue
 
@@ -142,10 +160,14 @@ class RCOverrideThread:
             # ── send override packet ───────────────────────────────────────
             try:
                 channels = self._read_channels()
+                self._last_channels = channels      # cache last good values
                 self._send_override(channels)
                 was_active = True
             except Exception as e:
                 print(f"[RC OVERRIDE] Error reading joystick: {e}")
-                self._js = None
+                # FIX: resend last known good channels instead of going
+                # neutral — prevents the snap-back the pilot sees.
+                self._send_override(self._last_channels)
+                self._js = None                     # will re-acquire next cycle
 
             time.sleep(SEND_RATE)

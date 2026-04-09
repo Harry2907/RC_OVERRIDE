@@ -18,6 +18,11 @@ class JoystickFlagThread:
     is unplugged — it silently continues. The only reliable method is to call
     pygame.joystick.quit() + pygame.joystick.init() and recheck get_count()
     each poll cycle.
+
+    FIX: We skip the joystick subsystem reinit while rc10_active is True.
+    RCOverrideThread is actively reading axes at that moment — calling
+    pygame.joystick.quit() mid-read is what caused the "Joystick not
+    initialized" race condition and the resulting channel snap-back.
     """
 
     POLL = 1.0   # seconds between plug/unplug checks
@@ -59,8 +64,13 @@ class JoystickFlagThread:
                 self._flags.slave_connected = True
 
             # ── joystick present — re-init subsystem and recount ──────────
-            # pygame.event.pump() alone never raises on unplug, so we must
-            # reinitialise the joystick subsystem and check the count.
+            # Skip reinit while RC override is actively reading axes.
+            # pygame.joystick.quit() during an active read causes the
+            # "Joystick not initialized" exception in RCOverrideThread.
+            if self._flags.rc10_active:
+                time.sleep(self.POLL)
+                continue
+
             pygame.event.pump()
             pygame.joystick.quit()
             pygame.joystick.init()

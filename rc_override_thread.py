@@ -165,8 +165,8 @@ class RCOverrideThread:
                 was_active = True
             except Exception as e:
                 print(f"[RC OVERRIDE] Error reading joystick: {e}")
-                # FIX: resend last known good channels instead of going
-                # neutral — prevents the snap-back the pilot sees.
+                # Resend last known good channels instead of going neutral —
+                # prevents the snap-back the pilot sees.
                 self._send_override(self._last_channels)
                 self._js = None                     # will re-acquire next cycle
 

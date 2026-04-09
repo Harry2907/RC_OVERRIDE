@@ -1,198 +1,243 @@
-# Drone Ground Control Station (GCS)
+<div align="center">
 
-A lightweight, hardware-embedded Ground Control Station for **dual-operator (Trainer/Trainee) drone flight**, designed to run on a Raspberry Pi with a small SPI display. It bridges a MAVLink-connected flight controller with a USB joystick (slave transmitter), providing real-time telemetry display, voice feedback, and seamless RC handoff between operators.
+<img src="Y.png" width="100" alt="Logo"/>
+
+# 🛸 Drone Trainer-Trainee GCS
+
+**A Raspberry Pi ground control station for dual-pilot RC drone training.**  
+The trainer flies. The trainee watches. One switch hands over the controls.
+
+[![Python](https://img.shields.io/badge/Python-3.9-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org)
+[![MAVLink](https://img.shields.io/badge/Protocol-MAVLink-00BFFF?style=flat-square)](https://mavlink.io)
+[![Platform](https://img.shields.io/badge/Platform-Raspberry%20Pi-C51A4A?style=flat-square&logo=raspberry-pi&logoColor=white)](https://raspberrypi.org)
+[![License](https://img.shields.io/badge/License-MIT-22C55E?style=flat-square)](LICENSE)
+
+</div>
+
+---
+
+## What it does
+
+A Raspberry Pi sits between a trainer pilot and a trainee pilot. It monitors both, decides who is in control, displays live telemetry on a tiny TFT screen, and announces key events by voice.
+
+```
+Trainer TX12 (RF) ──────────────────► Flight Controller
+                                             │
+                                       MAVLink / USB
+                                             │
+Trainee TX12 (USB) ──► Raspberry Pi ◄────────┘
+                              │
+                        TFT Display
+                        Speaker (TTS)
+```
+
+When the trainer flips **CH10**, control transfers to the trainee's USB joystick in real time. Flip it back — control returns instantly. Both disconnect events are detected, announced, and recovered from automatically.
 
 ---
 
 ## Features
 
-- **Dual-operator RC handoff** — A dedicated RC channel (CH10) toggles control between the Trainer (master RC) and Trainee (slave USB joystick) in real time at 20 Hz.
-- **Live telemetry display** on a 128×160 ST7735 TFT screen:
-  - Flight mode, GPS fix status, altitude, armed/disarmed state, flight state (in-flight / on ground)
-  - Pre-arm check results with human-readable error classification
-  - Trainer / Trainee header that updates dynamically with control handoff
-- **Boot sequence** with progress blocks for power, MAVLink link, and joystick presence
-- **Reconnect screen** with animated spinner for dropped Trainer (MAVLink) or Trainee (joystick) connections
-- **Voice announcements** via `pyttsx3` for mode changes, control handoffs, and connect/disconnect events
-- **Thread-safe shared flag system** for clean inter-thread communication
-
----
-
-## Hardware Requirements
-
-| Component | Details |
+| Feature | Detail |
 |---|---|
-| Single-board computer | Raspberry Pi (any model with SPI and GPIO) |
-| Display | ST7735R 128×160 SPI TFT (connected via CE0, D25, D24) |
-| Flight Controller | ArduPilot/PX4 FC connected via USB serial (`/dev/ttyACM0` or `/dev/ttyACM1`) |
-| Slave transmitter | USB joystick (e.g. RadioMaster TX12 in USB HID mode) |
-| Speaker / audio out | For `pyttsx3` voice feedback |
+| **Live telemetry display** | GPS fix, flight mode, altitude, arm status on 128×160 TFT |
+| **Trainer / Trainee header** | Screen shows who is currently flying |
+| **RC override at 20 Hz** | Trainee joystick axes → MAVLink `RC_CHANNELS_OVERRIDE` |
+| **Voice alerts** | Mode changes, control transfer, disconnect events via TTS |
+| **Prearm status** | FC prearm errors translated and shown every 5 seconds |
+| **Auto reconnect** | Spinning reconnect screen for both master and slave disconnect |
+| **Clean shutdown recovery** | Each device disconnect handled independently, no app crash |
 
 ---
 
-## Software Dependencies
+## Hardware required
 
-Install via `pip`:
+- Raspberry Pi (any model with SPI + USB)
+- ArduPilot / PX4 flight controller (USB)
+- RadioMaster TX12 or compatible joystick (USB, slave)
+- ST7735R 128×160 TFT display (SPI)
+- Speaker or 3.5mm audio output (for TTS)
+
+### TFT wiring (SPI)
+
+```
+TFT Pin   →   Raspberry Pi GPIO
+─────────────────────────────────
+VCC       →   3.3V  (Pin 1)
+GND       →   GND   (Pin 6)
+SCL       →   GPIO11 / SCLK (Pin 23)
+SDA       →   GPIO10 / MOSI (Pin 19)
+CS        →   GPIO8  / CE0  (Pin 24)
+DC        →   GPIO25        (Pin 22)
+RST       →   GPIO24        (Pin 18)
+```
+
+---
+
+## Installation
 
 ```bash
-pip install pymavlink pygame pillow pyttsx3 adafruit-circuitpython-rgb-display
+# Clone the repo
+git clone https://github.com/yourname/drone-trainer-gcs.git
+cd drone-trainer-gcs
+
+# Install dependencies
+pip install pygame pymavlink pillow pyttsx3 pyserial \
+            adafruit-circuitpython-rgb-display adafruit-blinka
+
+# Enable SPI on the Pi
+sudo raspi-config   # Interface Options → SPI → Enable
 ```
 
-System packages (Raspberry Pi OS):
+---
+
+## Usage
 
 ```bash
-sudo apt install python3-serial espeak libespeak1 fonts-dejavu
-```
-
----
-
-## Project Structure
-
-```
-FF/
-├── main.py                # Entry point — DroneGCS orchestrator
-├── boot.py                # Boot screen and reconnect screen rendering
-├── stfinal.py             # DroneDisplay — ST7735 telemetry UI renderer
-├── flags.py               # SharedFlags — thread-safe inter-thread state
-├── mavlink_thread.py      # MAVLinkFlagThread — connects to FC and sets flags
-├── joystick_thread.py     # JoystickFlagThread — detects USB joystick presence
-├── rc_override_thread.py  # RCOverrideThread — reads joystick, sends RC_CHANNELS_OVERRIDE
-├── errors.json            # Pre-arm error classification rules
-└── Y.png                  # Logo shown on boot screen
-```
-
----
-
-## How It Works
-
-### Architecture Overview
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                        main.py (DroneGCS)                   │
-│                                                             │
-│  ┌─────────────┐  ┌──────────────┐  ┌───────────────────┐  │
-│  │MAVLinkFlag  │  │JoystickFlag  │  │  RCOverride       │  │
-│  │Thread       │  │Thread        │  │  Thread           │  │
-│  │(connects FC)│  │(detects USB  │  │(reads joystick →  │  │
-│  │             │  │ joystick)    │  │ RC_CHANNELS_      │  │
-│  └──────┬──────┘  └──────┬───────┘  │ OVERRIDE @ 20Hz)  │  │
-│         │                │          └─────────┬─────────┘  │
-│         └────────────────┴───────────────┐    │            │
-│                                    SharedFlags              │
-│                                    (mavlink_connected,      │
-│                                     slave_connected,        │
-│                                     rc10_active, …)         │
-│         ┌──────────────────────────────────────────────┐   │
-│         │  MAVLinkReader (telemetry loop thread)        │   │
-│         │  - HEARTBEAT, GPS, ALT, STATUSTEXT, RC_CH    │   │
-│         └────────────────────┬─────────────────────────┘   │
-│                              │ dirty event                  │
-│         ┌────────────────────▼─────────────────────────┐   │
-│         │  Render Loop (daemon thread)                  │   │
-│         │  DroneDisplay.render() → ST7735               │   │
-│         │  pyttsx3 voice announcements                  │   │
-│         └──────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### State Machine
-
-`DroneGCS` runs a three-state machine on the main thread:
-
-| State | Description |
-|---|---|
-| `BOOT` | Waits for MAVLink link and joystick to connect; shows progress blocks |
-| `ACTIVE` | Streams telemetry to display; monitors for disconnections |
-| `RECONNECTING` | Blocks with animated spinner until the dropped device reconnects |
-
-### RC Handoff (Trainer ↔ Trainee)
-
-- The flight controller streams RC channel data over MAVLink.
-- When **CH10 > 1500 µs**, `rc10_active` is set to `True`.
-- `RCOverrideThread` reads the slave joystick axes and sends `RC_CHANNELS_OVERRIDE` MAVLink messages at **20 Hz**, giving the Trainee full stick control.
-- When CH10 is released, a zero-value override packet is sent to restore master RC authority.
-
-### Pre-arm Checks
-
-Every 5 seconds while disarmed, the GCS sends `MAV_CMD_RUN_PREARM_CHECKS` and collects `STATUSTEXT` messages for 1 second. Results are classified via `errors.json` and displayed on the status panel.
-
----
-
-## Running
-
-```bash
-cd FF
 python main.py
 ```
 
-The MAVLink connection defaults to UDP (`udp:0.0.0.0:14550`). To use a serial connection, edit `DroneGCS.CONNECTION` in `main.py`:
+The boot screen shows three blocks filling in sequence:
+
+```
+█  Power on
+█  MAVLink connected  (FC USB plugged in)
+█  Slave connected    (Trainee joystick plugged in)
+```
+
+Once all three are filled the system goes live.
+
+### Handing over control
+
+| Action | Result |
+|---|---|
+| Flip CH10 **high** on master TX | Trainee joystick takes control |
+| Flip CH10 **low** on master TX | Master TX resumes control |
+| Unplug trainee USB | Reconnect screen, voice alert |
+| Unplug FC USB | Reconnect screen, voice alert |
+
+---
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                        main.py                          │
+│                                                         │
+│  DroneGCS  ──  state machine: BOOT → ACTIVE → RECONNECT │
+│  MAVLinkReader  ──  parses telemetry, detects CH10      │
+└───────────────────────────┬─────────────────────────────┘
+                            │ SharedFlags (flags.py)
+           ┌────────────────┼────────────────┐
+           ▼                ▼                ▼
+   MAVLinkFlagThread  JoystickFlagThread  RCOverrideThread
+   mavlink_thread.py  joystick_thread.py  rc_override_thread.py
+   connects serial    watches /dev/input   reads axes → FC 20Hz
+```
+
+### Threads at a glance
+
+| Thread | File | Job | Lifespan |
+|---|---|---|---|
+| `MAVLinkFlagThread` | `mavlink_thread.py` | Opens serial port, sets `mavlink_connected` | Forever |
+| `JoystickFlagThread` | `joystick_thread.py` | Detects joystick plug / unplug | Forever |
+| `RCOverrideThread` | `rc_override_thread.py` | Sends joystick axes to FC at 20 Hz | Forever |
+| `MAVLinkReader` | `main.py` | Parses all MAVLink telemetry | Killed on disconnect, re-spawned on reconnect |
+| Render loop | `main.py` | Updates TFT display + TTS | Forever |
+| **Main thread** | `main.py` | State machine, boot/reconnect screens | Forever |
+
+### SharedFlags — thread-safe state bus
+
+All threads communicate through a single `SharedFlags` object. It uses a `threading.Lock` to prevent race conditions and a `threading.Event` as a doorbell — any flag change wakes the state manager immediately instead of polling every millisecond.
 
 ```python
-CONNECTION = "/dev/ttyACM0"   # serial at 57600 baud
+flags.mavlink_connected   # bool — FC serial alive
+flags.slave_connected     # bool — USB joystick present
+flags.rc10_active         # bool — trainee in control
+flags.mavlink_master      # MAVLink connection object (shared)
+flags.disconnected_device # "master" | "slave" | None
 ```
 
 ---
 
-## Configuration
+## File reference
 
-### Joystick Axis Mapping (`rc_override_thread.py`)
+```
+main.py               Core — DroneGCS state machine + MAVLinkReader
+flags.py              SharedFlags — thread-safe state bus
+mavlink_thread.py     MAVLinkFlagThread — serial connection manager
+joystick_thread.py    JoystickFlagThread — USB joystick watcher
+rc_override_thread.py RCOverrideThread — control transfer at 20 Hz
+stfinal.py            DroneDisplay — SPI TFT rendering
+boot.py               boot_screen + reconnect_screen
+errors.json           Prearm error translation table
+Y.png                 Boot screen logo
+```
+
+---
+
+## Prearm errors
+
+The system polls the FC for prearm errors every 5 seconds while disarmed. Raw FC messages are translated using `errors.json` to short strings that fit the display:
+
+| FC message | Display |
+|---|---|
+| `PreArm: GPS not healthy` | `No GPS fix` |
+| `PreArm: Gyro not calibrated` | `Gyro issue` |
+| `PreArm: Battery too low` | `Battery low` |
+| `PreArm: Barometer not healthy` | `Barometer failure` |
+| *(no errors)* | `READY TO ARM` |
+
+---
+
+## RC channel mapping
+
+| Channel | Control | Source when slave active |
+|---|---|---|
+| CH1 | Roll | Trainee joystick axis 0 |
+| CH2 | Pitch | Trainee joystick axis 1 |
+| CH3 | Throttle | Trainee joystick axis 2 |
+| CH4 | Yaw | Trainee joystick axis 3 |
+| CH5–CH8 | Modes / switches | Master TX (passthrough) |
+| CH10 | Control transfer switch | Master TX |
+
+CH5–CH8 always stay under master TX control via MAVLink `PASSTHROUGH = 65535`.
+
+---
+
+## Dependencies
+
+| Package | Purpose |
+|---|---|
+| `pygame` | USB joystick input |
+| `pymavlink` | MAVLink serial protocol |
+| `pillow` | TFT image rendering |
+| `pyttsx3` | Text-to-speech alerts |
+| `pyserial` | Serial port handling |
+| `adafruit-circuitpython-rgb-display` | ST7735 TFT driver |
+| `adafruit-blinka` | CircuitPython GPIO layer |
+
+---
+
+## Axis calibration
+
+If the joystick axes are mapped differently on your TX12, update these constants in `rc_override_thread.py`:
 
 ```python
-AXIS_ROLL     = 0   # Right stick X  → CH1
-AXIS_PITCH    = 1   # Right stick Y  → CH2
-AXIS_THROTTLE = 2   # Left  stick Y  → CH3
-AXIS_YAW      = 3   # Left  stick X  → CH4
+AXIS_ROLL     = 0   # right stick X
+AXIS_PITCH    = 1   # right stick Y
+AXIS_THROTTLE = 2   # left  stick Y
+AXIS_YAW      = 3   # left  stick X
 ```
 
-Adjust these indices to match your transmitter's USB HID axis order. Use `jstest /dev/input/js0` to identify them.
-
-### MAVLink Serial Ports (`mavlink_thread.py`)
-
-```python
-PORTS = ["/dev/ttyACM0", "/dev/ttyACM1"]
-BAUD  = 57600
-```
-
-### Pre-arm Error Rules (`errors.json`)
-
-Add or edit rules to classify MAVLink `STATUSTEXT` messages into short display strings:
-
-```json
-{
-  "battery": { "type": "PREARM", "short": "Battery low",   "severity": "HIGH" },
-  "gps":     { "type": "PREARM", "short": "No GPS fix",    "severity": "HIGH" }
-}
-```
-
-The key is a **lowercase substring** matched against the incoming status text.
-
----
-
-## Display Layout
-
-```
-┌──────────────────┐
-│     TRAINER      │  ← Header (switches to TRAINEE when CH10 active)
-├─────────┬────────┤
-│ ◉ LOCK  │ ✦ LOITER│  ← GPS fix | Flight mode
-├─────────┼────────┤
-│ ⌇IN     │ ↑12.4m │  ← Flight state | Altitude
-│  FLIGHT │        │
-├──────────────────┤
-│      STATUS      │
-│  ─────────────── │
-│   READY TO ARM   │  ← Pre-arm status (green/yellow/red)
-└──────────────────┘
+To find your axis indices, run:
+```bash
+jstest /dev/input/js0
 ```
 
 ---
 
-## Known Limitations
+<div align="center">
 
-- RSSI is received in the telemetry pipeline but not currently rendered on screen.
-- Audio (`pyttsx3`) is synchronous and may briefly block the render loop on slow hardware. Consider moving to a dedicated TTS thread for latency-sensitive applications.
-- The display driver assumes a BGR colour channel order (colours are swapped before sending to the ST7735).
+Built for real flight training on real hardware.
 
----
-
+</div>

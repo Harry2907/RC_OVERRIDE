@@ -74,3 +74,107 @@ def boot_screen(disp, img, draw, WIDTH, HEIGHT, font_mid, font_small, flags):
             fill_block(2)
 
     time.sleep(0.5)   # brief pause so user sees 100%
+
+def reconnect_screen(disp, img, draw, WIDTH, HEIGHT, flags, device_name):
+    """
+    Full-screen reconnect display. Blocks until the disconnected device
+    reconnects, then returns.
+
+    device_name : "master" | "slave"
+      "master" -> waits for flags.mavlink_connected
+      "slave"  -> waits for flags.slave_connected
+    """
+    import math
+    from PIL import ImageFont
+
+    def fix_color(image):
+        r, g, b = image.split()
+        return Image.merge("RGB", (b, g, r))
+
+    # -- colour scheme (BGR display) ---------------------------------------
+    BG        = (0,   0,   0)
+    RED_BGR   = (0,   0,   255)
+    ORANGE    = (65, 100,  255)
+    WHITE     = (255, 255, 255)
+    DIM       = (80,  80,  80)
+
+    # -- layout -----------------------------------------------------------
+    CX         = WIDTH  // 2
+    ICON_Y     = 38
+    LABEL_Y    = 70
+    DEVICE_Y   = 83
+    STATUS_Y   = 100
+    SPINNER_CY = 135
+    SPINNER_R  = 16
+    ARC_SPAN   = 270
+
+    device_label = "MASTER RC" if device_name == "master" else "SLAVE TX12"
+
+    # -- fonts ------------------------------------------------------------
+    BASE        = "/usr/share/fonts/truetype/dejavu/"
+    font_bold   = ImageFont.truetype(BASE + "DejaVuSans-Bold.ttf", 11)
+    font_small  = ImageFont.truetype(BASE + "DejaVuSans.ttf",       9)
+    font_exclam = ImageFont.truetype(BASE + "DejaVuSans-Bold.ttf",  14)
+
+    # -- static background (drawn once) -----------------------------------
+    draw.rectangle((0, 0, WIDTH, HEIGHT), fill=BG)
+
+    # warning triangle
+    draw.polygon([(CX, ICON_Y - 14), (CX - 14, ICON_Y + 10),
+                  (CX + 14, ICON_Y + 10)], outline=ORANGE)
+    ew = draw.textlength("!", font=font_exclam)
+    draw.text((CX - ew // 2, ICON_Y - 8), "!", font=font_exclam, fill=ORANGE)
+
+    # "DISCONNECTED"
+    lw = draw.textlength("DISCONNECTED", font=font_bold)
+    draw.text((CX - lw // 2, LABEL_Y), "DISCONNECTED",
+              font=font_bold, fill=RED_BGR)
+
+    # device name
+    dw = draw.textlength(device_label, font=font_bold)
+    draw.text((CX - dw // 2, DEVICE_Y), device_label,
+              font=font_bold, fill=WHITE)
+
+    # "RECONNECTING..."
+    rw = draw.textlength("RECONNECTING...", font=font_small)
+    draw.text((CX - rw // 2, STATUS_Y), "RECONNECTING...",
+              font=font_small, fill=DIM)
+
+    # spinner track (dim ring)
+    sx0 = CX - SPINNER_R
+    sy0 = SPINNER_CY - SPINNER_R
+    sx1 = CX + SPINNER_R
+    sy1 = SPINNER_CY + SPINNER_R
+    draw.ellipse((sx0, sy0, sx1, sy1), outline=(40, 40, 40))
+
+    disp.image(fix_color(img))
+
+    # -- spinner loop -----------------------------------------------------
+    angle = 0
+    STEP  = 30     # degrees per frame
+    DELAY = 0.08   # ~12 fps
+
+    while True:
+        if device_name == "master" and flags.mavlink_connected:
+            break
+        if device_name == "slave"  and flags.slave_connected:
+            break
+
+        # erase old arc
+        draw.ellipse((sx0, sy0, sx1, sy1), outline=(40, 40, 40))
+
+        # draw spinning arc (handle 360 wrap)
+        start_a = angle % 360
+        end_a   = (angle + ARC_SPAN) % 360
+        if start_a < end_a:
+            draw.arc((sx0, sy0, sx1, sy1),
+                     start=start_a, end=end_a, fill=ORANGE, width=3)
+        else:
+            draw.arc((sx0, sy0, sx1, sy1),
+                     start=start_a, end=360, fill=ORANGE, width=3)
+            draw.arc((sx0, sy0, sx1, sy1),
+                     start=0, end=end_a, fill=ORANGE, width=3)
+
+        disp.image(fix_color(img))
+        angle = (angle + STEP) % 360
+        time.sleep(DELAY)

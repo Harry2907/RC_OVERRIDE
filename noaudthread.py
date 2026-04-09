@@ -2,9 +2,10 @@ import time
 import threading
 import json
 import pyttsx3
+from serial import SerialException
 from pymavlink import mavutil
 from stfinal import DroneDisplay
-from boot import boot_screen
+from boot import boot_screen, reconnect_screen
 from flags import SharedFlags
 from mavlink_thread import MAVLinkFlagThread
 from joystick_thread import JoystickFlagThread
@@ -48,16 +49,12 @@ class MAVLinkReader:
 
     def _request_streams(self):
         """Ask the FC to stream all telemetry we need."""
-        # RAW_SENSORS  → GPS_RAW_INT
-        # EXTENDED_STATUS → SYS_STATUS
-        # POSITION     → GLOBAL_POSITION_INT
-        # EXTRA1       → ATTITUDE (future)
         streams = [
             mavutil.mavlink.MAV_DATA_STREAM_RAW_SENSORS,
             mavutil.mavlink.MAV_DATA_STREAM_EXTENDED_STATUS,
             mavutil.mavlink.MAV_DATA_STREAM_POSITION,
             mavutil.mavlink.MAV_DATA_STREAM_EXTRA1,
-            mavutil.mavlink.MAV_DATA_STREAM_RC_CHANNELS,  # needed for CH10 detection
+            mavutil.mavlink.MAV_DATA_STREAM_RC_CHANNELS,
         ]
         for stream_id in streams:
             self._master.mav.request_data_stream_send(
@@ -83,7 +80,6 @@ class MAVLinkReader:
             self._flags.mavlink_connected = True
             print("Connected!")
 
-        # Always request streams after connect/reconnect
         self._request_streams()
 
     def start(self):
@@ -91,7 +87,17 @@ class MAVLinkReader:
 
     def _thread_loop(self):
         while True:
-            msg = self._master.recv_match(blocking=True, timeout=0.5)
+            # ── SerialException = master physically unplugged ─────────────
+            try:
+                msg = self._master.recv_match(blocking=True, timeout=0.5)
+            except SerialException as e:
+                print(f"[MAVLINK] Serial disconnected: {e}")
+                self._flags.mavlink_connected   = False
+                self._flags.mavlink_master      = None
+                self._flags.disconnected_device = "master"
+                self._dirty.set()
+                return   # kill this thread — DroneGCS will spawn a fresh one
+
             if msg is None:
                 continue
 
@@ -156,7 +162,6 @@ class MAVLinkReader:
                         self._prearm_errors.add(text)
 
                 elif mtype == "RC_CHANNELS":
-                    # CH10 > 1500 → slave takes control, CH10 ≤ 1500 → master retakes
                     ch10 = msg.chan10_raw
                     new_rc10 = ch10 > 1500
                     if new_rc10 != self._flags.rc10_active:
@@ -164,13 +169,10 @@ class MAVLinkReader:
                         print(f"[RC10] {'SLAVE active' if new_rc10 else 'MASTER restored'} (CH10={ch10})")
 
                 # ── BOOT COMPLETION ──────────────────────────────────────
-                # FIX: only need one HEARTBEAT to confirm link is alive.
-                # GPS and SYS may never arrive if FC isn't streaming yet —
-                # waiting for them keeps the screen on INITIALIZING forever.
                 if not self._boot_complete:
                     if self._got_heartbeat:
                         self._boot_complete = True
-                        self._dirty.set()   # force immediate render
+                        self._dirty.set()
 
                     if self._state["status_msg"] != "INITIALIZING...":
                         self._state["status_msg"] = "INITIALIZING..."
@@ -234,32 +236,57 @@ class DroneGCS:
         self._lock  = threading.Lock()
         self._dirty = threading.Event()
 
-        # create everything exactly once in correct order
         self._flags = SharedFlags()
         MAVLinkFlagThread(self._flags).start()
         JoystickFlagThread(self._flags).start()
         RCOverrideThread(self._flags).start()
 
-        self._mavlink = MAVLinkReader(
+        self._display = DroneDisplay()
+
+        self._engine = pyttsx3.init()
+        self._engine.setProperty('rate', 140)
+        self._engine.setProperty('volume', 0.1)
+
+        self._render_thread = None   # tracked so we don't double-start
+
+    # ── helpers ───────────────────────────────────────────────────────────
+    def _reset_state(self):
+        """Clear telemetry back to defaults before a reconnect cycle."""
+        with self._lock:
+            self._state.update({
+                "mode":       "N/A",
+                "gps_fix":    False,
+                "altitude":   0.0,
+                "rssi":       -1,
+                "in_flight":  False,
+                "status_msg": "INITIALIZING...",
+                "armed":      False,
+            })
+
+    def _start_mavlink(self):
+        """Create a fresh MAVLinkReader, connect, and start its thread."""
+        mavlink = MAVLinkReader(
             self.CONNECTION,
             self._state,
             self._lock,
             self._dirty,
             self._flags,
         )
+        mavlink.connect()
+        mavlink.start()
+        return mavlink
 
-        self._display = DroneDisplay()
-
-        self._engine = pyttsx3.init()
-        self._engine.setProperty('rate', 140)
-        self._engine.setProperty('volume', 0.3)
-        self._last_mode_spoken = None
-        self._last_rc10_spoken = None   # tracks last spoken handover state
+    def _start_render_loop(self):
+        """Spin up the render thread (only once — it runs forever)."""
+        if self._render_thread and self._render_thread.is_alive():
+            return
+        self._render_thread = threading.Thread(
+            target=self._render_loop, daemon=True
+        )
+        self._render_thread.start()
 
     # ── STATE MANAGER (main thread) ───────────────────────────────────────
     def _state_manager(self):
-        STATE = "BOOT"
-
         d          = self._display
         disp       = d.display
         img        = d.image
@@ -268,39 +295,66 @@ class DroneGCS:
         font_mid   = d.font_status
         font_small = d.font_mode
 
+        STATE = "BOOT"
         print(f"[STATE] {STATE}")
 
         while True:
 
+            # ── BOOT ──────────────────────────────────────────────────────
             if STATE == "BOOT":
                 boot_screen(disp, img, draw, W, H,
                             font_mid, font_small, self._flags)
                 print("[STATE] Boot complete — 100%")
                 STATE = "ACTIVE"
 
+            # ── ACTIVE ────────────────────────────────────────────────────
             elif STATE == "ACTIVE":
                 print("[STATE] ACTIVE")
 
-                self._mavlink.connect()
+                self._flags.disconnected_device = None   # clear any stale flag
+                self._reset_state()
 
-                # kick render loop immediately so screen is not blank
+                mavlink = self._start_mavlink()
                 self._dirty.set()
+                self._start_render_loop()
 
-                self._mavlink.start()
-
-                render_thread = threading.Thread(
-                    target=self._render_loop, daemon=True
-                )
-                render_thread.start()
-
+                # watch for either device dropping
                 while True:
-                    self._flags.wait(timeout=0.5)
+                    self._flags.wait(timeout=0.3)
+
+                    # master serial dropped (MAVLinkReader thread set the flag and died)
+                    if not self._flags.mavlink_connected:
+                        print("[STATE] Master disconnected → RECONNECTING")
+                        self._flags.disconnected_device = "master"
+                        STATE = "RECONNECTING"
+                        break
+
+                    # slave joystick unplugged
+                    if not self._flags.slave_connected:
+                        print("[STATE] Slave disconnected → RECONNECTING")
+                        self._flags.disconnected_device = "slave"
+                        STATE = "RECONNECTING"
+                        break
+
+            # ── RECONNECTING ──────────────────────────────────────────────
+            elif STATE == "RECONNECTING":
+                device = self._flags.disconnected_device   # "master" | "slave"
+                print(f"[STATE] RECONNECTING — waiting for {device}")
+
+                # blocks here, spinning on screen, until device is back
+                reconnect_screen(disp, img, draw, W, H, self._flags, device)
+
+                print(f"[STATE] {device} reconnected → ACTIVE")
+                STATE = "ACTIVE"
 
     def start(self):
         self._state_manager()
 
-    # ── RENDER LOOP ───────────────────────────────────────────────────────
+    # ── RENDER LOOP (daemon thread, runs forever) ─────────────────────────
     def _render_loop(self):
+        last_mode_spoken = None
+        last_rc10_spoken = None
+
         while True:
             self._dirty.wait(timeout=self.RENDER_INTERVAL)
             self._dirty.clear()
@@ -320,18 +374,17 @@ class DroneGCS:
 
             self._display.render()
 
-            if s["mode"] != self._last_mode_spoken and s["mode"] != "N/A":
-                speech = f"Switched to {s['mode']} MODE"
-                self._engine.say(speech)
+            if s["mode"] != last_mode_spoken and s["mode"] != "N/A":
+                self._engine.say(f"Switched to {s['mode']} MODE")
                 self._engine.runAndWait()
-                self._last_mode_spoken = s["mode"]
+                last_mode_spoken = s["mode"]
 
             rc10 = self._flags.rc10_active
-            if rc10 != self._last_rc10_spoken:
+            if rc10 != last_rc10_spoken:
                 speech = "Control to slave" if rc10 else "Control to master"
                 self._engine.say(speech)
                 self._engine.runAndWait()
-                self._last_rc10_spoken = rc10
+                last_rc10_spoken = rc10
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

@@ -12,8 +12,12 @@ class JoystickFlagThread:
     """
     Watches for USB joystick (slave TX12) presence only.
     Sets:
-        flags.slave_connected  → True when joystick is plugged in, False when removed
-    No axis reading — stick movement is not required at boot.
+        flags.slave_connected  -> True when joystick is plugged in, False when removed
+
+    Disconnect detection: pygame.event.pump() does NOT raise when a joystick
+    is unplugged — it silently continues. The only reliable method is to call
+    pygame.joystick.quit() + pygame.joystick.init() and recheck get_count()
+    each poll cycle.
     """
 
     POLL = 1.0   # seconds between plug/unplug checks
@@ -54,12 +58,16 @@ class JoystickFlagThread:
 
                 self._flags.slave_connected = True
 
-            # ── joystick present — just check it's still there ────────────
-            try:
-                pygame.event.pump()
-                time.sleep(self.POLL)
+            # ── joystick present — re-init subsystem and recount ──────────
+            # pygame.event.pump() alone never raises on unplug, so we must
+            # reinitialise the joystick subsystem and check the count.
+            pygame.event.pump()
+            pygame.joystick.quit()
+            pygame.joystick.init()
 
-            except Exception:
+            if pygame.joystick.get_count() == 0:
                 print("[JS THREAD] Disconnected")
                 self._js = None
                 self._flags.slave_connected = False
+
+            time.sleep(self.POLL)

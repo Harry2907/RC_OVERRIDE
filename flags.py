@@ -10,6 +10,7 @@ class SharedFlags:
         self._slave_connected   = False
         self._rc10_active       = False   # True when master RC button 10 is held
         self.running            = True
+        self.disconnected_device = None   # "master" | "slave" | None
 
     # ── internal setter ───────────────────────────────────────────────────
     def _set(self, attr, value):

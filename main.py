@@ -1,6 +1,5 @@
 import time
 import threading
-import queue
 import json
 import pyttsx3
 from serial import SerialException
@@ -284,33 +283,13 @@ class DroneGCS:
 
         self._display = DroneDisplay()
 
-        # TTS runs in its own dedicated thread — pyttsx3 is NOT thread-safe.
-        # All other threads just call self._speak("text") and return instantly.
-        # The TTS thread drains the queue one message at a time.
-        self._tts_queue  = queue.Queue()
-        self._tts_thread = threading.Thread(target=self._tts_loop, daemon=True)
-        self._tts_thread.start()
+        self._engine = pyttsx3.init()
+        self._engine.setProperty('rate', 140)
+        self._engine.setProperty('volume', 0.1)
 
         self._render_thread = None   # tracked so we don't double-start
 
     # ── helpers ───────────────────────────────────────────────────────────
-    def _speak(self, text):
-        """Non-blocking. Any thread can call this safely."""
-        self._tts_queue.put(text)
-
-    def _tts_loop(self):
-        """Single thread that owns pyttsx3 — drains queue one item at a time."""
-        engine = pyttsx3.init()
-        engine.setProperty('rate', 140)
-        engine.setProperty('volume', 0.1)
-        while True:
-            text = self._tts_queue.get()   # blocks until something is queued
-            try:
-                engine.say(text)
-                engine.runAndWait()
-            except Exception as e:
-                print(f"[TTS] Error: {e}")
-
     def _reset_state(self):
         """Clear telemetry back to defaults before a reconnect cycle."""
         with self._lock:
@@ -400,7 +379,8 @@ class DroneGCS:
                     if not self._flags.mavlink_connected:
                         print("[STATE] Master disconnected → RECONNECTING")
                         self._flags.disconnected_device = "master"
-                        self._speak("Trainer disconnected")
+                        self._engine.say("Trainer disconnected")
+                        self._engine.runAndWait()
                         STATE = "RECONNECTING"
                         break
 
@@ -408,7 +388,8 @@ class DroneGCS:
                     if not self._flags.slave_connected:
                         print("[STATE] Slave disconnected → RECONNECTING")
                         self._flags.disconnected_device = "slave"
-                        self._speak("Trainee disconnected")
+                        self._engine.say("Trainee disconnected")
+                        self._engine.runAndWait()
                         STATE = "RECONNECTING"
                         break
 
@@ -427,7 +408,8 @@ class DroneGCS:
                 self._dirty.set()
 
                 label = "Trainer" if device == "master" else "Trainee"
-                self._speak(f"{label} reconnected")
+                self._engine.say(f"{label} reconnected")
+                self._engine.runAndWait()
                 print(f"[STATE] {device} reconnected → ACTIVE")
                 STATE = "ACTIVE"
 
@@ -459,13 +441,15 @@ class DroneGCS:
             self._display.render()
 
             if s["mode"] != last_mode_spoken and s["mode"] != "N/A":
-                self._speak(f"Switched to {s['mode']} MODE")
+                self._engine.say(f"Switched to {s['mode']} MODE")
+                self._engine.runAndWait()
                 last_mode_spoken = s["mode"]
 
             rc10 = self._flags.rc10_active
             if rc10 != last_rc10_spoken:
                 speech = "Control to slave" if rc10 else "Control to master"
-                self._speak(speech)
+                self._engine.say(speech)
+                self._engine.runAndWait()
                 last_rc10_spoken = rc10
 
 

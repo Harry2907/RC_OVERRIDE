@@ -56,20 +56,22 @@ class DroneDisplay:
         self.altitude   = 0.0
         self.in_flight  = False
         self.status_msg = "N/A"
+        self.slave_mode = False       # True when RC10 active → header shows TRAINEE
 
     # ── Public update ──────────────────────────────────────────────────────
-    def update_data(self, mode, gps_fix, altitude, rssi, in_flight, status_msg):
+    def update_data(self, mode, gps_fix, altitude, rssi, in_flight, status_msg, slave_mode=False):
         self.mode       = mode
         self.gps_fix    = gps_fix
         self.altitude   = altitude
         self.rssi       = rssi          # kept, not displayed
         self.in_flight  = in_flight
         self.status_msg = status_msg
+        self.slave_mode = slave_mode
 
     def _state_changed(self):
         """Return True when any displayed value has changed since last render."""
         cur = (self.mode, self.gps_fix,
-               round(self.altitude, 1), self.in_flight, self.status_msg)
+               round(self.altitude, 1), self.in_flight, self.status_msg, self.slave_mode)
         if cur != self._prev.get("key"):
             self._prev["key"] = cur
             return True
@@ -161,9 +163,10 @@ class DroneDisplay:
 
         # ── TOP BAR ──────────────────────────────────────────────────────
         d.rectangle((0, 0, W - 1, TOP_H - 1), fill=(10, 18, 35))
-        title = "TRAINER"
+        title = "TRAINEE" if self.slave_mode else "TRAINER"
+        title_color = self.GREEN if self.slave_mode else self.YELLOW
         tw = d.textlength(title, font=self.font_title)
-        d.text(((W - tw) // 2, 2), title, font=self.font_title, fill=self.YELLOW)
+        d.text(((W - tw) // 2, 2), title, font=self.font_title, fill=title_color)
         d.line((0, TOP_H - 1, W, TOP_H - 1), fill=self.BORDER)
 
         # ── ROW 1 — GPS | MODE ───────────────────────────────────────────

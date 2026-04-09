@@ -8,6 +8,7 @@ from boot import boot_screen
 from flags import SharedFlags
 from mavlink_thread import MAVLinkFlagThread
 from joystick_thread import JoystickFlagThread
+from rc_override_thread import RCOverrideThread
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -46,12 +47,17 @@ class MAVLinkReader:
         return msg
 
     def _request_streams(self):
-
+        """Ask the FC to stream all telemetry we need."""
+        # RAW_SENSORS  → GPS_RAW_INT
+        # EXTENDED_STATUS → SYS_STATUS
+        # POSITION     → GLOBAL_POSITION_INT
+        # EXTRA1       → ATTITUDE (future)
         streams = [
             mavutil.mavlink.MAV_DATA_STREAM_RAW_SENSORS,
             mavutil.mavlink.MAV_DATA_STREAM_EXTENDED_STATUS,
             mavutil.mavlink.MAV_DATA_STREAM_POSITION,
             mavutil.mavlink.MAV_DATA_STREAM_EXTRA1,
+            mavutil.mavlink.MAV_DATA_STREAM_RC_CHANNELS,  # needed for CH10 detection
         ]
         for stream_id in streams:
             self._master.mav.request_data_stream_send(
@@ -149,6 +155,14 @@ class MAVLinkReader:
                     if self._collecting and "PreArm" in text:
                         self._prearm_errors.add(text)
 
+                elif mtype == "RC_CHANNELS":
+                    # CH10 > 1500 → slave takes control, CH10 ≤ 1500 → master retakes
+                    ch10 = msg.chan10_raw
+                    new_rc10 = ch10 > 1500
+                    if new_rc10 != self._flags.rc10_active:
+                        self._flags.rc10_active = new_rc10
+                        print(f"[RC10] {'SLAVE active' if new_rc10 else 'MASTER restored'} (CH10={ch10})")
+
                 # ── BOOT COMPLETION ──────────────────────────────────────
                 # FIX: only need one HEARTBEAT to confirm link is alive.
                 # GPS and SYS may never arrive if FC isn't streaming yet —
@@ -224,6 +238,7 @@ class DroneGCS:
         self._flags = SharedFlags()
         MAVLinkFlagThread(self._flags).start()
         JoystickFlagThread(self._flags).start()
+        RCOverrideThread(self._flags).start()
 
         self._mavlink = MAVLinkReader(
             self.CONNECTION,
@@ -237,8 +252,9 @@ class DroneGCS:
 
         self._engine = pyttsx3.init()
         self._engine.setProperty('rate', 140)
-        self._engine.setProperty('volume', 0.1)
+        self._engine.setProperty('volume', 0.3)
         self._last_mode_spoken = None
+        self._last_rc10_spoken = None   # tracks last spoken handover state
 
     # ── STATE MANAGER (main thread) ───────────────────────────────────────
     def _state_manager(self):
@@ -299,6 +315,7 @@ class DroneGCS:
                 s["rssi"],
                 s["in_flight"],
                 s["status_msg"],
+                slave_mode=self._flags.rc10_active,
             )
 
             self._display.render()
@@ -308,6 +325,13 @@ class DroneGCS:
                 self._engine.say(speech)
                 self._engine.runAndWait()
                 self._last_mode_spoken = s["mode"]
+
+            rc10 = self._flags.rc10_active
+            if rc10 != self._last_rc10_spoken:
+                speech = "Control to slave" if rc10 else "Control to master"
+                self._engine.say(speech)
+                self._engine.runAndWait()
+                self._last_rc10_spoken = rc10
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

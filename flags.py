@@ -8,6 +8,7 @@ class SharedFlags:
         self.mavlink_master = None
         self._mavlink_connected = False
         self._slave_connected   = False
+        self._rc10_active       = False   # True when master RC button 10 is held
         self.running            = True
 
     # ── internal setter ───────────────────────────────────────────────────
@@ -33,6 +34,14 @@ class SharedFlags:
     @slave_connected.setter
     def slave_connected(self, v):
         self._set("_slave_connected", v)
+
+    @property
+    def rc10_active(self):
+        return self._rc10_active
+
+    @rc10_active.setter
+    def rc10_active(self, v):
+        self._set("_rc10_active", v)
 
     # ── wait for any flag change ──────────────────────────────────────────
     def wait(self, timeout=1.0):

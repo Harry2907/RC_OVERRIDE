@@ -64,14 +64,13 @@ def boot_screen(disp, img, draw, WIDTH, HEIGHT, font_mid, font_small, flags):
     # Block 1 — power always on
     fill_block(0)
 
-    # ── poll until all 3 filled ───────────────────────────────────────────
     while not all(filled):
         flags.wait(timeout=0.2)
 
-        if flags.mavlink_connected:
+        if filled[0] and flags.mavlink_connected:
             fill_block(1)
 
-        if flags.slave_connected:          # plug-in only, no stick movement needed
+        if filled[1] and flags.slave_connected:
             fill_block(2)
 
     time.sleep(0.5)   # brief pause so user sees 100%

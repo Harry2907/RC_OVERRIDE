@@ -57,19 +57,7 @@ When the trainer flips **CH10**, control transfers to the trainee's USB joystick
 - ST7735R 128×160 TFT display (SPI)
 - Speaker or 3.5mm audio output (for TTS)
 
-### TFT wiring (SPI)
 
-```
-TFT Pin   →   Raspberry Pi GPIO
-─────────────────────────────────
-VCC       →   3.3V  (Pin 1)
-GND       →   GND   (Pin 6)
-SCL       →   GPIO11 / SCLK (Pin 23)
-SDA       →   GPIO10 / MOSI (Pin 19)
-CS        →   GPIO8  / CE0  (Pin 24)
-DC        →   GPIO25        (Pin 22)
-RST       →   GPIO24        (Pin 18)
-```
 
 ---
 

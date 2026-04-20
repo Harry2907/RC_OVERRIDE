@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="Y.png" width="100" alt="Logo"/>
+<img src="" width="100" alt="Logo"/>
 
 # 🛸 Drone Trainer-Trainee GCS
 

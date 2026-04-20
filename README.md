@@ -1,4 +1,4 @@
-#Drone Ground Control Station (GCS)
+# Drone Ground Control Station (GCS)
 
 A lightweight, hardware-embedded Ground Control Station for **dual-operator (Trainer/Trainee) drone flight**, designed to run on a Raspberry Pi with a small SPI display. It bridges a MAVLink-connected flight controller with a USB joystick (slave transmitter), providing real-time telemetry display, voice feedback, and seamless RC handoff between operators.
 

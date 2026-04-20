@@ -196,6 +196,3 @@ The key is a **lowercase substring** matched against the incoming status text.
 
 ---
 
-## License
-
-MIT — see `LICENSE` for details.
